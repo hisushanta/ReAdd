@@ -489,7 +489,9 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: Colors.white,
       appBar: AppBar(
+        backgroundColor: const ui.Color.fromARGB(255, 240, 237, 237),
         title: const Text('Image Text Editor'),
         actions: [
           if (_imageBytes != null && !_previewMode)
