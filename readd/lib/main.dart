@@ -45,6 +45,8 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
   String _selectedFont = 'PT Sans';
   Color _selectedColor = Colors.black;
   bool _isBold = false;
+  Uint8List? _selectedImageBytes;
+  bool _isImageMode = false;
 
   // List of available Google Fonts
   final List<String> _availableFonts = [
@@ -125,11 +127,42 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
     });
   }
 
-  void _startTextInput() {
+  void _showContentSelectionDialog() {
     if (_startPoint == null || _endPoint == null || _previewMode || _image == null) return;
     
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Select Content Type'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.text_fields),
+              title: const Text('Add Text'),
+              onTap: () {
+                Navigator.pop(context);
+                _startTextInput();
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.image),
+              title: const Text('Add Image'),
+              onTap: () {
+                Navigator.pop(context);
+                _pickImageForRectangle();
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _startTextInput() {
     setState(() {
       _isTyping = true;
+      _isImageMode = false;
     });
     
     showDialog(
@@ -222,7 +255,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
                             ),
                           ),
                         );
-                      }).toList(),
+                      }),
                     ],
                   ),
                 ],
@@ -246,7 +279,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
                     _textController.clear();
                   });
                   Navigator.pop(context);
-                  _applyText();
+                  _applyContent();
                 },
                 child: const Text('Apply'),
               ),
@@ -255,6 +288,18 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
         },
       ),
     );
+  }
+
+  Future<void> _pickImageForRectangle() async {
+    final pickedFile = await ImagePicker().pickImage(source: ImageSource.gallery);
+    if (pickedFile != null) {
+      final bytes = await pickedFile.readAsBytes();
+      setState(() {
+        _selectedImageBytes = bytes;
+        _isImageMode = true;
+      });
+      _applyContent();
+    }
   }
 
   TextStyle _getSelectedFontStyle(double fontSize) {
@@ -328,39 +373,82 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
     return style;
   }
 
-  Future<void> _applyText() async {
-    if (_startPoint == null || _endPoint == null || _newText.isEmpty || _image == null) return;
+Future<void> _applyContent() async {
+  if (_startPoint == null || _endPoint == null || _image == null) return;
+  if (!_isImageMode && _newText.isEmpty) return;
+  if (_isImageMode && _selectedImageBytes == null) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+  setState(() {
+    _isLoading = true;
+  });
 
-    try {
-      // Calculate rectangle coordinates
-      final x1 = _startPoint!.dx;
-      final y1 = _startPoint!.dy;
-      final x2 = _endPoint!.dx;
-      final y2 = _endPoint!.dy;
-      
-      final x = x1 < x2 ? x1 : x2;
-      final y = y1 < y2 ? y1 : y2;
-      final width = (x2 - x1).abs();
-      final height = (y2 - y1).abs();
-      
-      // Create a canvas to draw on
-      final recorder = ui.PictureRecorder();
-      final canvas = Canvas(recorder, Rect.fromLTWH(0, 0, _image!.width.toDouble(), _image!.height.toDouble()));
-      
-      // Draw original image
-      canvas.drawImage(_image!, Offset.zero, Paint());
-      
-      // Draw white rectangle
-      canvas.drawRect(
-        Rect.fromLTWH(x, y, width, height),
-        Paint()..color = Colors.white,
+  try {
+    // Calculate rectangle coordinates
+    final x1 = _startPoint!.dx;
+    final y1 = _startPoint!.dy;
+    final x2 = _endPoint!.dx;
+    final y2 = _endPoint!.dy;
+    
+    final x = x1 < x2 ? x1 : x2;
+    final y = y1 < y2 ? y1 : y2;
+    final width = (x2 - x1).abs();
+    final height = (y2 - y1).abs();
+    
+    // Create a canvas to draw on with higher quality settings
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(
+      recorder, 
+      Rect.fromLTWH(0, 0, _image!.width.toDouble(), _image!.height.toDouble()),
+    );
+    
+    // Draw original image with high quality
+    final paint = Paint()..filterQuality = FilterQuality.high;
+    canvas.drawImage(_image!, Offset.zero, paint);
+    
+    // Draw white rectangle
+    canvas.drawRect(
+      Rect.fromLTWH(x, y, width, height),
+      Paint()..color = Colors.white,
+    );
+    
+    if (_isImageMode) {
+      // Load the selected image with original quality
+      final codec = await ui.instantiateImageCodec(
+        _selectedImageBytes!,
+        targetWidth: width.toInt(),
+        targetHeight: height.toInt(),
       );
+      final frame = await codec.getNextFrame();
+      final selectedImage = frame.image;
       
-      // Prepare text with selected font and style
+      // Calculate aspect ratio and scaling while maintaining quality
+      final imageRatio = selectedImage.width / selectedImage.height;
+      final rectRatio = width / height;
+      
+      double drawWidth, drawHeight;
+      if (imageRatio > rectRatio) {
+        drawWidth = width;
+        drawHeight = width / imageRatio;
+      } else {
+        drawHeight = height;
+        drawWidth = height * imageRatio;
+      }
+      
+      // Center the image in the rectangle with high quality
+      final offsetX = x + (width - drawWidth) / 2;
+      final offsetY = y + (height - drawHeight) / 2;
+      
+      canvas.drawImageRect(
+        selectedImage,
+        Rect.fromLTWH(0, 0, 
+          selectedImage.width.toDouble(), 
+          selectedImage.height.toDouble()
+        ),
+        Rect.fromLTWH(offsetX, offsetY, drawWidth, drawHeight),
+        Paint()..filterQuality = FilterQuality.high,
+      );
+    } else {
+      // Text handling remains the same
       final fontSize = _calculateOptimalFontSize(width, height, _newText);
       final textSpan = TextSpan(
         text: _newText,
@@ -373,36 +461,40 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
       );
       textPainter.layout();
       
-      // Calculate centered position
       final textX = x + (width - textPainter.width) / 2;
       final textY = y + (height - textPainter.height) / 2;
       
-      // Draw text
       textPainter.paint(canvas, Offset(textX, textY));
-      
-      // Convert to image
-      final picture = recorder.endRecording();
-      final newImage = await picture.toImage(_image!.width, _image!.height);
-      final byteData = await newImage.toByteData(format: ui.ImageByteFormat.png);
-      final newImageBytes = byteData!.buffer.asUint8List();
-      
-      // Update state
-      setState(() {
-        _imageBytes = newImageBytes;
-        _startPoint = null;
-        _endPoint = null;
-        _newText = '';
-      });
-      
-      // Reload the new image
-      await _loadImage(newImageBytes);
-    } finally {
-      setState(() {
-        _isLoading = false;
-      });
     }
+    
+    // Convert to image with high quality
+    final picture = recorder.endRecording();
+    final newImage = await picture.toImage(
+      _image!.width,
+      _image!.height,
+    );
+    final byteData = await newImage.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
+    final newImageBytes = byteData!.buffer.asUint8List();
+    
+    // Update state
+    setState(() {
+      _imageBytes = newImageBytes;
+      _startPoint = null;
+      _endPoint = null;
+      _newText = '';
+      _selectedImageBytes = null;
+    });
+    
+    // Reload the new image
+    await _loadImage(newImageBytes);
+  } finally {
+    setState(() {
+      _isLoading = false;
+    });
   }
-
+}
   double _calculateOptimalFontSize(double width, double height, String text) {
     double fontSize = 50.0;
     final textSpan = TextSpan(
@@ -471,6 +563,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
           _isTyping = false;
           _newText = '';
           _previewMode = false;
+          _selectedImageBytes = null;
         });
       });
     } finally {
@@ -492,7 +585,7 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
       backgroundColor: Colors.white,
       appBar: AppBar(
         backgroundColor: const ui.Color.fromARGB(255, 240, 237, 237),
-        title: const Text('Image Text Editor'),
+        title: const Text('Image Editor'),
         actions: [
           if (_imageBytes != null && !_previewMode)
             IconButton(
@@ -557,8 +650,8 @@ class _ImageEditorScreenState extends State<ImageEditorScreen> {
                               bottom: 20,
                               right: 20,
                               child: FloatingActionButton(
-                                onPressed: _startTextInput,
-                                child: const Icon(Icons.text_fields),
+                                onPressed: _showContentSelectionDialog,
+                                child: const Icon(Icons.add),
                               ),
                             ),
                         ],
